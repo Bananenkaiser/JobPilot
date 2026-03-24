@@ -7,6 +7,7 @@ database:
 cv:
   path: "data/persönliche_informationen/Dominik-Tisleric-CV.pdf"
   me_path: "data/persönliche_informationen/me.md"
+  profile_path: "data/persönliche_informationen/kandidatenprofil.md"
 
 analyzer:
   # "anthropic" = Claude API | "lmstudio" = lokales LM Studio

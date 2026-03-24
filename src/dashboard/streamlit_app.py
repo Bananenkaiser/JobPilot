@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +16,7 @@ ROOT = Path(__file__).parent.parent.parent
 
 load_dotenv(ROOT / ".env")
 
-from src.analyzer.job_matcher import AnalysisResult, analyze_job
+from src.analyzer.job_matcher import AnalysisResult, analyze_job, create_candidate_profile, extract_github_skills, suggest_cv_improvements
 from src.storage.database import JOBS_COLLECTION, get_session, init_db
 from src.storage.models import Job, JobStatus
 
@@ -126,7 +127,11 @@ def _render_analyse_tab(config: dict) -> None:
     with col_info:
         cv_cfg = config.get("cv", {})
         cv_name = Path(cv_cfg.get("path", "")).name
-        st.info(f"Lebenslauf: `{cv_name}`")
+        profile_p = ROOT / cv_cfg.get("profile_path", "")
+        if profile_p.exists():
+            st.success("Kandidatenprofil aktiv – schnellere Analyse")
+        else:
+            st.info(f"Lebenslauf: `{cv_name}`")
         backend = config.get("analyzer", {}).get("backend", "anthropic")
         st.info(f"KI-Backend: `{backend}`")
 
@@ -137,6 +142,8 @@ def _render_analyse_tab(config: dict) -> None:
             cv_path = ROOT / config["cv"]["path"]
             me_str = config.get("cv", {}).get("me_path", "")
             me_path = ROOT / me_str if me_str else None
+            profile_str = config.get("cv", {}).get("profile_path", "")
+            profile_path = ROOT / profile_str if profile_str else None
 
             with st.spinner("KI-Analyse läuft... (kann 30–120 Sekunden dauern)"):
                 result = analyze_job(
@@ -147,10 +154,12 @@ def _render_analyse_tab(config: dict) -> None:
                     company=company,
                     stream_output=False,
                     config=config,
+                    profile_path=profile_path,
                 )
             st.session_state["analysis_result"] = result
             st.session_state["analysis_done"] = True
             st.session_state["save_success"] = False
+            st.session_state["cv_improvements"] = None
 
     if st.session_state.get("analysis_done") and st.session_state.get("analysis_result"):
         result: AnalysisResult = st.session_state["analysis_result"]
@@ -179,6 +188,27 @@ def _render_analyse_tab(config: dict) -> None:
                     _save_job(result, st.session_state.get("input_description", ""))
                     st.session_state["save_success"] = True
                     st.rerun()
+
+        # --- CV-Optimierungen ---
+        st.divider()
+        st.subheader("Lebenslauf-Optimierungen für diese Stelle")
+        profile_str = config.get("cv", {}).get("profile_path", "")
+        profile_path_opt = ROOT / profile_str if profile_str else None
+
+        if profile_path_opt and profile_path_opt.exists():
+            if st.button("Optimierungsvorschläge generieren", key="cv_improve_btn", type="primary"):
+                with st.spinner("Erstelle Optimierungsvorschläge... (~30 Sekunden)"):
+                    improvements = suggest_cv_improvements(
+                        st.session_state.get("input_description", ""),
+                        profile_path_opt,
+                        config,
+                    )
+                st.session_state["cv_improvements"] = improvements
+
+            if st.session_state.get("cv_improvements"):
+                st.markdown(st.session_state["cv_improvements"])
+        else:
+            st.info("Kandidatenprofil im Tab 'Mein Profil' erstellen um CV-Optimierungen zu erhalten.")
 
 
 def _render_statistik_tab() -> None:
@@ -405,34 +435,277 @@ def _render_stellen_tab() -> None:
             st.text(doc["description"][:3000])
 
 
+def _parse_profile(text: str) -> dict:
+    """Extrahiert strukturierte Felder aus dem Kandidatenprofil-Markdown."""
+    import re
+
+    def _field(key: str) -> str:
+        m = re.search(rf"\*\*{key}:\*\*\s*(.+)", text)
+        return m.group(1).strip() if m else ""
+
+    def _bullets(key: str) -> list[str]:
+        m = re.search(rf"\*\*{key}:\*\*\n((?:\s*-\s*.+\n?)+)", text)
+        if not m:
+            return []
+        return [re.sub(r"^\s*-\s*", "", line).strip() for line in m.group(1).splitlines() if line.strip()]
+
+    return {
+        "level": _field("Erfahrungslevel"),
+        "fachgebiet": _field("Fachgebiet"),
+        "erfahrung": _field("Berufserfahrung"),
+        "sprachen": _field("Sprachen"),
+        "soft_skills": _field("Soft Skills & Besonderheiten"),
+        "kompetenzen": _bullets("Kernkompetenzen"),
+        "tools": _bullets("Tools & Technologien"),
+        "has_github": "## GitHub-Profil" in text,
+    }
+
+
+def _tags_html(items: list[str], color: str = "#1f77b4") -> str:
+    """Rendert eine Liste als farbige Pill-Tags."""
+    tags = "".join(
+        f'<span style="display:inline-block;background:{color};color:white;'
+        f'border-radius:12px;padding:2px 10px;margin:2px 3px 2px 0;font-size:0.85em">{item}</span>'
+        for item in items
+    )
+    return f'<div style="line-height:2">{tags}</div>'
+
+
+def _render_profil_overview(profil_text: str, profile_path: "Path") -> None:
+    """Zeigt eine visuelle Übersicht des Kandidatenprofils."""
+    p = _parse_profile(profil_text)
+
+    # Level-Farbe
+    level_raw = p["level"].lower()
+    if "senior" in level_raw or "lead" in level_raw:
+        level_color = "#2e7d32"
+    elif "mid" in level_raw:
+        level_color = "#e65100"
+    else:
+        level_color = "#1565c0"
+
+    # Kopfzeile
+    col_lvl, col_fach, col_exp = st.columns(3)
+    with col_lvl:
+        st.markdown(
+            f'<div style="background:{level_color};color:white;border-radius:8px;'
+            f'padding:10px 16px;text-align:center;font-weight:bold;font-size:1.1em">'
+            f'{p["level"] or "Level unbekannt"}</div>',
+            unsafe_allow_html=True,
+        )
+    with col_fach:
+        st.markdown("**Fachgebiet**")
+        st.markdown(p["fachgebiet"] or "—")
+    with col_exp:
+        st.markdown("**Berufserfahrung**")
+        st.markdown(p["erfahrung"] or "—")
+
+    st.markdown("")
+
+    # Kernkompetenzen
+    if p["kompetenzen"]:
+        st.markdown("**Kernkompetenzen**")
+        st.markdown(_tags_html(p["kompetenzen"], "#1565c0"), unsafe_allow_html=True)
+
+    # Tools & Technologien
+    if p["tools"]:
+        st.markdown("**Tools & Technologien**")
+        st.markdown(_tags_html(p["tools"], "#37474f"), unsafe_allow_html=True)
+
+    # Sprachen + Soft Skills
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        if p["sprachen"]:
+            st.markdown("**Programmiersprachen**")
+            langs = [l.strip() for l in re.split(r"[,;/]", p["sprachen"]) if l.strip()]
+            st.markdown(_tags_html(langs, "#6a1b9a"), unsafe_allow_html=True)
+    with col_s2:
+        if p["soft_skills"]:
+            st.markdown("**Soft Skills**")
+            st.caption(p["soft_skills"])
+
+    # GitHub-Badge
+    st.markdown("")
+    github_badge = (
+        '<span style="background:#2da44e;color:white;border-radius:12px;padding:3px 12px;font-size:0.85em">GitHub-Skills eingebunden</span>'
+        if p["has_github"]
+        else '<span style="background:#6e7781;color:white;border-radius:12px;padding:3px 12px;font-size:0.85em">Kein GitHub-Profil</span>'
+    )
+    mtime = datetime.fromtimestamp(profile_path.stat().st_mtime).strftime("%d.%m.%Y %H:%M")
+    st.markdown(
+        f'{github_badge} &nbsp; <span style="color:gray;font-size:0.8em">Zuletzt aktualisiert: {mtime}</span>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_profil_tab(config: dict) -> None:
     cv_cfg = config.get("cv", {})
     cv_path = ROOT / cv_cfg.get("path", "")
     me_path = ROOT / cv_cfg.get("me_path", "")
+    profile_str = cv_cfg.get("profile_path", "")
+    profile_path = ROOT / profile_str if profile_str else None
 
-    st.subheader("Lebenslauf")
-    if cv_path.exists():
-        st.success(f"Aktuell: `{cv_path.name}` ({cv_path.stat().st_size // 1024} KB)")
+    # ── Datenquellen-Status ──────────────────────────────────────────────────
+    st.subheader("Profil-Übersicht")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        if cv_path.exists():
+            st.success(f"Lebenslauf\n{cv_path.name}")
+        else:
+            st.error("Lebenslauf\nfehlt")
+    with c2:
+        if me_path.exists() and me_path.read_text(encoding="utf-8").strip():
+            st.success("Persönliche\nInfos (me.md)")
+        else:
+            st.warning("Persönliche\nInfos leer")
+    with c3:
+        if profile_path and profile_path.exists():
+            st.success("Kandidaten-\nprofil")
+        else:
+            st.warning("Kandidaten-\nprofil fehlt")
+    with c4:
+        if profile_path and profile_path.exists():
+            has_gh = "## GitHub-Profil" in profile_path.read_text(encoding="utf-8")
+            if has_gh:
+                st.success("GitHub-Skills\neingebunden")
+            else:
+                st.warning("GitHub-Skills\nnicht vorhanden")
+        else:
+            st.info("GitHub-Skills\n—")
+
+    # ── Kandidatenprofil Übersicht ───────────────────────────────────────────
+    if profile_path and profile_path.exists():
+        profil_text = profile_path.read_text(encoding="utf-8")
+        st.divider()
+        _render_profil_overview(profil_text, profile_path)
+
+        st.divider()
+        with st.expander("Profil bearbeiten / neu erstellen"):
+            edited_profil = st.text_area("Rohtext", value=profil_text, height=400, key="profil_editor")
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                if st.button("Speichern", key="save_profil"):
+                    profile_path.write_text(edited_profil, encoding="utf-8")
+                    st.success("Profil gespeichert.")
+                    st.rerun()
+            with col_p2:
+                if st.button("Neu erstellen (KI)", key="regen_profil"):
+                    with st.spinner("Analysiere Lebenslauf..."):
+                        new_profil = create_candidate_profile(cv_path, me_path, config)
+                    profile_path.write_text(new_profil, encoding="utf-8")
+                    st.success("Profil neu erstellt.")
+                    st.rerun()
     else:
-        st.warning(f"Kein Lebenslauf gefunden unter: `{cv_path}`")
+        st.divider()
+        st.caption("Kandidatenprofil einmalig aus deinem Lebenslauf erstellen. Wird danach bei jeder Analyse statt dem rohen PDF verwendet (~75% weniger Tokens).")
+        if cv_path.exists():
+            if st.button("Kandidatenprofil erstellen", type="primary", key="create_profil"):
+                with st.spinner("Analysiere Lebenslauf... (~30 Sekunden)"):
+                    new_profil = create_candidate_profile(cv_path, me_path, config)
+                if profile_path:
+                    profile_path.parent.mkdir(parents=True, exist_ok=True)
+                    profile_path.write_text(new_profil, encoding="utf-8")
+                    st.success("Profil erstellt!")
+                    st.rerun()
+        else:
+            st.info("Bitte zuerst einen Lebenslauf hochladen.")
 
-    uploaded = st.file_uploader("Neuen Lebenslauf hochladen (PDF)", type=["pdf"])
-    if uploaded:
-        cv_path.parent.mkdir(parents=True, exist_ok=True)
-        cv_path.write_bytes(uploaded.read())
-        st.success(f"Gespeichert: `{cv_path.name}`")
-
+    # ── Lebenslauf & me.md bearbeiten ───────────────────────────────────────
     st.divider()
-    st.subheader("Persönliche Informationen (me.md)")
-    st.caption("Diese Datei ergänzt deinen Lebenslauf mit zusätzlichem Kontext für die KI-Analyse.")
+    with st.expander("Lebenslauf verwalten"):
+        if cv_path.exists():
+            st.success(f"{cv_path.name} ({cv_path.stat().st_size // 1024} KB)")
+        else:
+            st.warning(f"Kein Lebenslauf gefunden: `{cv_path}`")
+        uploaded = st.file_uploader("Neuen Lebenslauf hochladen (PDF)", type=["pdf"])
+        if uploaded:
+            cv_path.parent.mkdir(parents=True, exist_ok=True)
+            cv_path.write_bytes(uploaded.read())
+            st.success(f"Gespeichert: `{cv_path.name}`")
 
-    current_text = me_path.read_text(encoding="utf-8") if me_path.exists() else ""
-    new_text = st.text_area("Inhalt bearbeiten", value=current_text, height=400, key="me_md_editor")
+    with st.expander("Persönliche Informationen (me.md) bearbeiten"):
+        st.caption("Ergänzt deinen Lebenslauf mit zusätzlichem Kontext für die KI-Analyse.")
+        current_text = me_path.read_text(encoding="utf-8") if me_path.exists() else ""
+        new_text = st.text_area("Inhalt", value=current_text, height=300, key="me_md_editor")
+        if st.button("Speichern", key="save_me_md", type="primary"):
+            me_path.parent.mkdir(parents=True, exist_ok=True)
+            me_path.write_text(new_text, encoding="utf-8")
+            st.success("me.md gespeichert.")
 
-    if st.button("Speichern", type="primary"):
-        me_path.parent.mkdir(parents=True, exist_ok=True)
-        me_path.write_text(new_text, encoding="utf-8")
-        st.success("me.md gespeichert.")
+    # --- GitHub-Profil ---
+    st.divider()
+    st.subheader("GitHub-Profil")
+    st.caption("Alle öffentlichen Repositories durchsuchen und Skills aus den READMEs extrahieren und zum Profil hinzufügen.")
+
+    github_input = st.text_input(
+        "GitHub-Benutzername oder Profil-URL",
+        placeholder="Bananenkaiser  oder  https://github.com/Bananenkaiser",
+        key="github_username",
+    )
+    if st.button("Skills aus allen Repos extrahieren", key="github_btn"):
+        if not github_input.strip():
+            st.error("Bitte einen GitHub-Benutzernamen oder Profil-URL eingeben.")
+        elif profile_path is None or not profile_path.exists():
+            st.error("Bitte zuerst ein Kandidatenprofil erstellen.")
+        else:
+            import httpx
+
+            # Benutzername aus URL oder direkt
+            raw_input = github_input.strip().rstrip("/")
+            if "github.com/" in raw_input:
+                username = raw_input.split("github.com/")[-1].split("/")[0]
+            else:
+                username = raw_input
+
+            try:
+                # Alle öffentlichen Repos abrufen
+                api_url = f"https://api.github.com/users/{username}/repos?per_page=100&sort=updated"
+                with st.spinner(f"Lade Repositories von @{username}..."):
+                    resp = httpx.get(api_url, timeout=15, follow_redirects=True,
+                                     headers={"Accept": "application/vnd.github+json"})
+
+                if resp.status_code == 404:
+                    st.error(f"GitHub-Benutzer '{username}' nicht gefunden.")
+                elif resp.status_code != 200:
+                    st.error(f"GitHub API Fehler (HTTP {resp.status_code}).")
+                else:
+                    repos = resp.json()
+                    if not repos:
+                        st.warning("Keine öffentlichen Repositories gefunden.")
+                    else:
+                        combined_parts = []
+                        progress = st.progress(0.0, text="Lade READMEs...")
+                        fetched = 0
+
+                        for i, repo in enumerate(repos):
+                            repo_name = repo.get("name", "")
+                            default_branch = repo.get("default_branch", "main")
+                            readme_url = f"https://raw.githubusercontent.com/{username}/{repo_name}/{default_branch}/README.md"
+                            try:
+                                r = httpx.get(readme_url, timeout=8, follow_redirects=True)
+                                if r.status_code == 200 and r.text.strip():
+                                    # Pro Repo auf 2000 Zeichen begrenzen
+                                    readme_excerpt = r.text[:2000]
+                                    combined_parts.append(f"### {repo_name}\n\n{readme_excerpt}")
+                                    fetched += 1
+                            except Exception:
+                                pass
+                            progress.progress((i + 1) / len(repos), text=f"Lade READMEs... ({i+1}/{len(repos)})")
+
+                        progress.empty()
+
+                        if not combined_parts:
+                            st.warning("Keine READMEs gefunden.")
+                        else:
+                            combined_text = "\n\n---\n\n".join(combined_parts)
+                            with st.spinner(f"Extrahiere Skills aus {fetched} READMEs..."):
+                                skills_text = extract_github_skills(combined_text, config)
+                            current = profile_path.read_text(encoding="utf-8")
+                            profile_path.write_text(current + "\n\n" + skills_text, encoding="utf-8")
+                            st.success(f"Skills aus {fetched} Repositories extrahiert und zum Profil hinzugefügt.")
+                            st.rerun()
+            except Exception as e:
+                st.error(f"Fehler: {e}")
 
 
 def main() -> None:
@@ -451,6 +724,8 @@ def main() -> None:
         st.session_state["analysis_result"] = None
     if "save_success" not in st.session_state:
         st.session_state["save_success"] = False
+    if "cv_improvements" not in st.session_state:
+        st.session_state["cv_improvements"] = None
 
     tab_statistik, tab_stellen, tab_analyse, tab_profil = st.tabs(
         ["Übersicht", "Gespeicherte Stellen", "Analyse", "Mein Profil"]

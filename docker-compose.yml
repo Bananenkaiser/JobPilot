@@ -32,3 +32,26 @@ services:
     # Standard: Scheduler dauerhaft laufen lassen
     # Für Einzel-Crawl: docker compose run app python main.py run
     command: ["python", "main.py", "scheduler"]
+
+  dashboard:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    ports:
+      - "${DASHBOARD_PORT:-8501}:8501"
+    command:
+      - streamlit
+      - run
+      - dashboard.py
+      - --server.port=8501
+      - --server.address=0.0.0.0
+      - --server.headless=true

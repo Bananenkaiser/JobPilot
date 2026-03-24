@@ -33,6 +33,7 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 
 # Anwendungscode kopieren
 COPY main.py .
+COPY dashboard.py .
 COPY src/ ./src/
 COPY config/ ./config/
 

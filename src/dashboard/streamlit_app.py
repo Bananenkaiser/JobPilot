@@ -156,9 +156,9 @@ def _render_analyse_tab(config: dict) -> None:
                     config=config,
                     profile_path=profile_path,
                 )
+            _save_job(result, description)
             st.session_state["analysis_result"] = result
             st.session_state["analysis_done"] = True
-            st.session_state["save_success"] = False
             st.session_state["cv_improvements"] = None
 
     if st.session_state.get("analysis_done") and st.session_state.get("analysis_result"):
@@ -178,16 +178,6 @@ def _render_analyse_tab(config: dict) -> None:
                 st.caption(f"Tokens: {total:,}  (In: {result.input_tokens:,} | Out: {result.output_tokens:,})")
 
         st.markdown(result.full_analysis)
-
-        st.divider()
-        with st.expander("In Datenbank speichern", expanded=True):
-            if st.session_state.get("save_success"):
-                st.success("Job erfolgreich gespeichert!")
-            else:
-                if st.button("Job + Analyse in MongoDB speichern", key="save_btn"):
-                    _save_job(result, st.session_state.get("input_description", ""))
-                    st.session_state["save_success"] = True
-                    st.rerun()
 
         # --- CV-Optimierungen ---
         st.divider()

@@ -67,7 +67,11 @@ Zeige für jede Lücke/Schwäche **konkret**, was ich im Lebenslauf ändern oder
 Format: „Abschnitt X: [aktuelle Formulierung] → [optimierte Formulierung]" oder „Fehlend: [was ergänzen und wo]".
 
 ### 6. Empfehlung
-Soll ich mich bewerben? Mit welcher Strategie?"""
+Soll ich mich bewerben? Mit welcher Strategie?
+
+#### Wichtige ATS-Keywords für diese Stelle
+Keywords aus der Ausschreibung, die im Lebenslauf vorhanden sein sollten, damit ATS-Systeme eine höhere Trefferquote erzielen:
+- **[Keyword]** — im Lebenslauf vorhanden: Ja / Nein"""
 
 
 PROFILE_PROMPT = """Analysiere den folgenden Lebenslauf und extrahiere daraus ein vollständiges Kandidatenprofil.

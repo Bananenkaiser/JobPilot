@@ -67,6 +67,8 @@ def _save_job(result: AnalysisResult, description: str) -> None:
     doc["model_used"] = result.model_used
     doc["input_tokens"] = result.input_tokens
     doc["output_tokens"] = result.output_tokens
+    doc["candidate_level"] = result.candidate_level
+    doc["job_level"] = result.job_level
 
     with get_session() as db:
         db[JOBS_COLLECTION].insert_one(doc)

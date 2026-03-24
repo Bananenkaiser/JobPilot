@@ -26,27 +26,34 @@ ANALYSIS_PROMPT = """Analysiere die Passung zwischen dem folgenden Lebenslauf un
 ## Stellenausschreibung
 {job_content}
 
-Beginne deine Antwort immer mit diesen zwei Zeilen (extrahiert aus der Stellenausschreibung):
-**Stelle:** [Jobtitel]
-**Unternehmen:** [Unternehmensname]
+Beginne deine Antwort immer mit diesen Zeilen (extrahiert bzw. eingeschätzt):
+**Stelle:** [Jobtitel aus der Ausschreibung]
+**Unternehmen:** [Unternehmensname aus der Ausschreibung]
+**Kandidaten-Level:** [Einschätzung des Levels aus dem Lebenslauf, z.B. Junior, Mid-Level, Senior, Lead]
+**Ausschreibungs-Level:** [Gesuchtes Level laut Stellenausschreibung, z.B. Junior, Mid-Level, Senior, Lead]
 
 Erstelle danach eine strukturierte Analyse mit folgenden Abschnitten:
 
 ### 1. Gesamtbewertung
 - Passungsgrad in Prozent (0–100%)
+- Berücksichtige dabei explizit, ob das Level des Kandidaten zum gesuchten Level der Stelle passt. Eine starke Level-Abweichung (z.B. Senior-Kandidat auf Junior-Stelle oder umgekehrt) soll den Score deutlich beeinflussen.
 - Kurze Begründung (2–3 Sätze)
 
-### 2. Stärken (was passt gut)
+### 2. Level-Einschätzung
+- Begründe, warum du den Kandidaten als [Level] einschätzt (Berufserfahrung in Jahren, Verantwortungsbereiche, Technologietiefe).
+- Passt das Level zur Stelle? Wenn nicht: wie groß ist die Abweichung und wie wirkt sie sich aus?
+
+### 3. Stärken (was passt gut)
 Liste die konkreten Übereinstimmungen zwischen Lebenslauf und Stelle auf.
 
-### 3. Lücken (was fehlt oder ist schwach)
+### 4. Lücken (was fehlt oder ist schwach)
 Liste die Anforderungen der Stelle, die im Lebenslauf fehlen oder unzureichend dargestellt sind.
 
-### 4. Konkrete Lebenslauf-Optimierungen für diese Stelle
+### 5. Konkrete Lebenslauf-Optimierungen für diese Stelle
 Zeige für jede Lücke/Schwäche **konkret**, was ich im Lebenslauf ändern oder ergänzen sollte.
 Format: „Abschnitt X: [aktuelle Formulierung] → [optimierte Formulierung]" oder „Fehlend: [was ergänzen und wo]".
 
-### 5. Empfehlung
+### 6. Empfehlung
 Soll ich mich bewerben? Mit welcher Strategie?"""
 
 
@@ -56,6 +63,8 @@ class AnalysisResult:
     full_analysis: str
     job_title: str = ""
     company: str = ""
+    candidate_level: str = ""   # z.B. "Senior", "Mid-Level"
+    job_level: str = ""         # gesuchtes Level laut Ausschreibung
     input_tokens: int = 0
     output_tokens: int = 0
 
@@ -84,16 +93,18 @@ def _pdf_to_text(cv_path: Path) -> str:
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
-def _extract_metadata(text: str) -> tuple[str, str]:
-    """Extrahiert Jobtitel und Unternehmen aus dem KI-Antwort-Header."""
-    title, company = "", ""
-    m = re.search(r"\*\*Stelle:\*\*\s*(.+)", text)
-    if m:
-        title = m.group(1).strip()
-    m = re.search(r"\*\*Unternehmen:\*\*\s*(.+)", text)
-    if m:
-        company = m.group(1).strip()
-    return title, company
+def _extract_metadata(text: str) -> tuple[str, str, str, str]:
+    """Extrahiert Jobtitel, Unternehmen und Level-Einschätzungen aus dem KI-Antwort-Header."""
+    def _get(pattern: str) -> str:
+        m = re.search(pattern, text)
+        return m.group(1).strip() if m else ""
+
+    return (
+        _get(r"\*\*Stelle:\*\*\s*(.+)"),
+        _get(r"\*\*Unternehmen:\*\*\s*(.+)"),
+        _get(r"\*\*Kandidaten-Level:\*\*\s*(.+)"),
+        _get(r"\*\*Ausschreibungs-Level:\*\*\s*(.+)"),
+    )
 
 
 def _extract_fit_score(text: str) -> int:
@@ -312,13 +323,15 @@ def analyze_job(
         model_used = f"Anthropic – {ANTHROPIC_MODEL}"
 
     fit_score = _extract_fit_score(full_text)
-    extracted_title, extracted_company = _extract_metadata(full_text)
+    extracted_title, extracted_company, candidate_level, job_level = _extract_metadata(full_text)
 
     return AnalysisResult(
         fit_score=fit_score,
         full_analysis=full_text,
         job_title=job_title or extracted_title,
         company=company or extracted_company,
+        candidate_level=candidate_level,
+        job_level=job_level,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         model_used=model_used,

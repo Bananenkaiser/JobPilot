@@ -26,6 +26,7 @@ from src.analyzer.job_matcher import (
     analyze_project_improvements,
     analyze_skill_gaps,
     create_candidate_profile,
+    extract_cv_to_markdown,
     extract_github_skills,
     suggest_cv_improvements,
     suggest_general_improvements,
@@ -206,10 +207,13 @@ def _render_analyse_tab(config: dict) -> None:
             if st.button("Optimierungsvorschläge generieren", key="cv_improve_btn", type="primary"):
                 with st.spinner("Erstelle Optimierungsvorschläge... (~30 Sekunden)"):
                     try:
+                        cv_md_str = config.get("cv", {}).get("cv_md_path", "")
+                        cv_md_p = ROOT / cv_md_str if cv_md_str else None
                         improvements = suggest_cv_improvements(
                             st.session_state.get("input_description", ""),
                             profile_path_opt,
                             config,
+                            cv_md_path=cv_md_p if (cv_md_p and cv_md_p.exists()) else None,
                         )
                         st.session_state["cv_improvements"] = improvements
                     except Exception as e:
@@ -673,6 +677,7 @@ def _render_profil_tab(config: dict) -> None:
     me_path = ROOT / cv_cfg.get("me_path", "")
     profile_str = cv_cfg.get("profile_path", "")
     profile_path = ROOT / profile_str if profile_str else None
+    cv_md_path = ROOT / cv_cfg.get("cv_md_path", "data/persönliche_informationen/lebenslauf_extrahiert.md")
 
     profil_text = profile_path.read_text(encoding="utf-8") if (profile_path and profile_path.exists()) else None
     has_github = profil_text is not None and "## GitHub-Profil" in profil_text
@@ -833,6 +838,10 @@ def _render_profil_tab(config: dict) -> None:
                                         if not skills_text.strip():
                                             st.warning("KI hat keine Skills extrahiert (leere Antwort).")
                                         else:
+                                            if not cv_md_path.exists():
+                                                with st.spinner("Extrahiere Lebenslauf-Inhalt..."):
+                                                    cv_md_path.parent.mkdir(parents=True, exist_ok=True)
+                                                    cv_md_path.write_text(extract_cv_to_markdown(cv_path), encoding="utf-8")
                                             if profil_text:
                                                 base_profil = profil_text
                                             else:
@@ -856,11 +865,15 @@ def _render_profil_tab(config: dict) -> None:
                 col_a, col_b, col_c = st.columns([2, 1, 1])
                 with col_a:
                     if st.button("Profil jetzt erstellen / neu erstellen", type="primary", key="create_profil"):
-                        with st.spinner("Analysiere Lebenslauf... (~30 Sekunden)"):
+                        with st.spinner("Extrahiere Lebenslauf-Inhalt..."):
+                            cv_md_text = extract_cv_to_markdown(cv_path)
+                        cv_md_path.parent.mkdir(parents=True, exist_ok=True)
+                        cv_md_path.write_text(cv_md_text, encoding="utf-8")
+                        with st.spinner("Erstelle Kandidatenprofil... (~30 Sekunden)"):
                             new_profil = create_candidate_profile(cv_path, me_path, config)
                         profile_path.parent.mkdir(parents=True, exist_ok=True)
                         profile_path.write_text(new_profil, encoding="utf-8")
-                        st.success("Profil erstellt.")
+                        st.success("Profil erstellt (lebenslauf_extrahiert.md + kandidatenprofil.md).")
                         st.session_state["profil_panel"] = None
                         st.rerun()
                 if profil_text:
@@ -874,7 +887,10 @@ def _render_profil_tab(config: dict) -> None:
                         cd1, cd2 = st.columns(2)
                         with cd1:
                             if st.button("Ja, löschen", key="confirm_delete_yes", type="primary"):
-                                profile_path.unlink()
+                                folder = profile_path.parent
+                                for f in folder.iterdir():
+                                    if f.is_file():
+                                        f.unlink()
                                 st.session_state.pop("confirm_delete_profil", None)
                                 st.session_state["profil_panel"] = None
                                 st.rerun()
@@ -907,7 +923,7 @@ def _render_profil_tab(config: dict) -> None:
         if st.button("Verbesserungsvorschläge generieren", key="btn_general_improvements"):
             with st.spinner("Analysiere Profil …"):
                 try:
-                    result = suggest_general_improvements(profile_path, config)
+                    result = suggest_general_improvements(profile_path, config, cv_md_path if cv_md_path.exists() else None)
                     st.session_state["general_improvements"] = result
                 except Exception as e:
                     st.error(f"Verbesserungsvorschläge fehlgeschlagen: {e}")
@@ -967,10 +983,15 @@ def _render_verbesserungen_tab(config: dict) -> None:
     cv_cfg = config.get("cv", {})
     profile_str = cv_cfg.get("profile_path", "")
     profile_path = ROOT / profile_str if profile_str else None
+    cv_md_path = ROOT / cv_cfg.get("cv_md_path", "data/persönliche_informationen/lebenslauf_extrahiert.md")
+    cv_md = cv_md_path if cv_md_path.exists() else None
 
     if not profile_path or not profile_path.exists():
         st.info("Kein Kandidatenprofil vorhanden. Bitte zuerst im Tab 'Mein Profil' ein Profil erstellen.")
         return
+
+    if not cv_md:
+        st.warning("Kein extrahierter Lebenslauf gefunden (`lebenslauf_extrahiert.md`). Bitte Profil neu erstellen für vollständige Analysen.")
 
     def _p(key: str, default: str) -> Path:
         return ROOT / cv_cfg.get(key, default)
@@ -981,7 +1002,7 @@ def _render_verbesserungen_tab(config: dict) -> None:
         _imp_subtab(
             label="Lebenslauf-Analyse",
             cache_path=_p("imp_cv_path", "data/persönliche_informationen/verbesserungen_lebenslauf.md"),
-            analyze_fn=analyze_cv_improvements,
+            analyze_fn=lambda p, c: analyze_cv_improvements(p, c, cv_md),
             profile_path=profile_path,
             config=config,
             spinner_text="Analysiere Lebenslauf... (~30 Sekunden)",
@@ -992,7 +1013,7 @@ def _render_verbesserungen_tab(config: dict) -> None:
         _imp_subtab(
             label="Projektempfehlungen",
             cache_path=_p("imp_projects_path", "data/persönliche_informationen/verbesserungen_projekte.md"),
-            analyze_fn=analyze_project_improvements,
+            analyze_fn=lambda p, c: analyze_project_improvements(p, c, cv_md),
             profile_path=profile_path,
             config=config,
             spinner_text="Erstelle Projektempfehlungen... (~30 Sekunden)",

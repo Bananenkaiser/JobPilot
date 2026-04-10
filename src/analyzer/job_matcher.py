@@ -124,12 +124,18 @@ Erstelle das Profil exakt in diesem Format (Markdown). Jeder Listenpunkt steht a
 **Weitere Tools & Technologien:**
 - [ein Tool pro Zeile – alles was nicht in obige Kategorien passt]
 
+**Projekte:**
+Für jedes Projekt im Lebenslauf EXAKT so auflisten – kürze NICHTS ab, übertrage alle Zahlen, Metriken und Ergebnisse wörtlich:
+- **[Projektname]:** [vollständige Beschreibung inkl. aller Metriken, Modellperformance, Datenmengen, Ergebnisse und Technologien – exakt wie im Lebenslauf]
+
+**Ausbildung:** [Abschlüsse mit Fach, Hochschule und Jahr]
+
 **Soft Skills & Besonderheiten:** [nur wenn klar erkennbar, sonst weglassen]"""
 
 CV_IMPROVEMENT_PROMPT = """Du bist ein erfahrener Karriereberater. Erstelle konkrete, umsetzbare Verbesserungsvorschläge für einen Lebenslauf, um ihn optimal auf die folgende Stelle auszurichten.
 
-## Kandidatenprofil
-{profile_content}
+## Lebenslauf (vollständiger Inhalt)
+{cv_content}
 
 ## Stellenausschreibung
 {job_content}
@@ -160,10 +166,10 @@ Für jedes Keyword: wo genau im Lebenslauf einbauen und wie es sich natürlich i
 Worauf sollte das Anschreiben besonders eingehen?
 - ..."""
 
-GENERAL_IMPROVEMENT_PROMPT = """Du bist ein erfahrener Karriereberater. Analysiere das folgende Kandidatenprofil und erstelle allgemeine, stellenunabhängige Verbesserungsvorschläge für Lebenslauf und Anschreiben.
+GENERAL_IMPROVEMENT_PROMPT = """Du bist ein erfahrener Karriereberater. Analysiere den folgenden vollständigen Lebenslauf und erstelle allgemeine, stellenunabhängige Verbesserungsvorschläge für Lebenslauf und Anschreiben.
 
-## Kandidatenprofil
-{profile_content}
+## Lebenslauf (vollständiger Inhalt)
+{cv_content}
 
 ### Allgemeine Lebenslauf-Optimierungen
 
@@ -196,32 +202,34 @@ Für jede Schwäche: konkrete Stelle im Lebenslauf benennen und eine verbesserte
 #### Muster-Eröffnungssatz
 [Ein konkreter Beispielsatz als Vorlage]"""
 
-IMP_CV_PROMPT = """Du bist ein erfahrener Karriereberater. Analysiere ausschließlich den Lebenslauf-Aspekt des folgenden Kandidatenprofils.
+IMP_CV_PROMPT = """Du bist ein erfahrener Karriereberater. Analysiere den folgenden vollständigen Lebenslauf und erstelle konkrete Verbesserungsvorschläge.
 
-## Kandidatenprofil
-{profile_content}
+## Lebenslauf (vollständiger Inhalt)
+{cv_content}
 
 Antworte nur mit diesem Abschnitt – kein Präambel, keine anderen Themen.
 
 ## Lebenslauf-Optimierungen
 
 ### Stärken (was bereits gut präsentiert ist)
-- [konkrete Stärke mit Begründung]
+- [konkrete Stärke mit Begründung – beziehe dich auf exakte Formulierungen aus dem Lebenslauf]
 
 ### Kritische Verbesserungen
-Für jede Schwäche: zeige die exakte Stelle und eine verbesserte Version.
-- **[Bereich]:** „[aktuelle Formulierung oder fehlendes Element]" → „[optimierte Version]"
+Für jede Schwäche: zeige die exakte Originalformulierung und eine verbesserte Version.
+- **[Bereich]:** „[exakte Formulierung aus dem Lebenslauf]" → „[optimierte Version]"
 
 ### Fehlende Elemente für typische {field}-Stellen
-- [was in diesem Fachbereich erwartet wird, aber im Profil fehlt]
+- [was in diesem Fachbereich erwartet wird, aber im Lebenslauf fehlt]
 
 ### Struktur & Formatierung
 - [Hinweise zu Abschnittsreihenfolge, Länge, Lesbarkeit, ATS-Kompatibilität]"""
 
-IMP_PROJECTS_PROMPT = """Du bist ein erfahrener Senior-Entwickler und Karriereberater. Analysiere das folgende Kandidatenprofil und empfehle konkrete Projekte.
+IMP_PROJECTS_PROMPT = """Du bist ein erfahrener Senior-Entwickler und Karriereberater. Analysiere den folgenden vollständigen Lebenslauf und empfehle konkrete neue Projekte, die echte Lücken im Portfolio schließen.
 
-## Kandidatenprofil
-{profile_content}
+WICHTIG: Alle im Lebenslauf aufgeführten Projekte mit ihren Metriken und Ergebnissen gelten als bereits umgesetzt – schlage diese NICHT erneut vor.
+
+## Lebenslauf (vollständiger Inhalt)
+{cv_content}
 
 Antworte nur mit diesem Abschnitt – kein Präambel, keine anderen Themen.
 
@@ -638,6 +646,13 @@ def _call_llm(prompt: str, config: dict | None) -> str:
     return ""
 
 
+def extract_cv_to_markdown(cv_path: Path) -> str:
+    """Extrahiert den vollständigen Lebenslauf-Text direkt aus der Datei (kein LLM)."""
+    if cv_path.suffix.lower() == ".pdf":
+        return _pdf_to_text(cv_path)
+    return cv_path.read_text(encoding="utf-8", errors="replace")
+
+
 def create_candidate_profile(cv_path: Path, me_path: Path | None, config: dict | None) -> str:
     """Analysiert den Lebenslauf einmalig und erstellt ein kompaktes Kandidatenprofil."""
     cv_type, cv_content = _read_cv(cv_path)
@@ -654,22 +669,26 @@ def create_candidate_profile(cv_path: Path, me_path: Path | None, config: dict |
     return _call_llm(prompt, config)
 
 
-def suggest_cv_improvements(job_description: str, profile_path: Path, config: dict | None) -> str:
+def suggest_cv_improvements(job_description: str, profile_path: Path, config: dict | None, cv_md_path: Path | None = None) -> str:
     """Erstellt stellenspezifische Verbesserungsvorschläge für den Lebenslauf."""
-    profile_text = profile_path.read_text(encoding="utf-8")
-    prompt = CV_IMPROVEMENT_PROMPT.format(
-        profile_content=profile_text,
-        job_content=job_description,
-    )
+    if cv_md_path and cv_md_path.exists():
+        cv_text = cv_md_path.read_text(encoding="utf-8")
+    else:
+        cv_text = profile_path.read_text(encoding="utf-8")
+    prompt = CV_IMPROVEMENT_PROMPT.format(cv_content=cv_text, job_content=job_description)
     return _call_llm(prompt, config)
 
 
-def suggest_general_improvements(profile_path: Path, config: dict | None) -> str:
+def suggest_general_improvements(profile_path: Path, config: dict | None, cv_md_path: Path | None = None) -> str:
     """Allgemeine, stellenunabhängige Verbesserungsvorschläge für CV und Anschreiben."""
+    if cv_md_path and cv_md_path.exists():
+        cv_text = cv_md_path.read_text(encoding="utf-8")
+    else:
+        cv_text = profile_path.read_text(encoding="utf-8")
     profile_text = profile_path.read_text(encoding="utf-8")
     field_match = re.search(r"\*\*Fachgebiet:\*\*\s*(.+)", profile_text)
     field = field_match.group(1).strip() if field_match else "IT/Data-Science"
-    prompt = GENERAL_IMPROVEMENT_PROMPT.format(profile_content=profile_text, field=field)
+    prompt = GENERAL_IMPROVEMENT_PROMPT.format(cv_content=cv_text, field=field)
     return _call_llm(prompt, config)
 
 
@@ -679,14 +698,23 @@ def _profile_and_field(profile_path: Path) -> tuple[str, str]:
     return profile_text, m.group(1).strip() if m else "IT/Data-Science"
 
 
-def analyze_cv_improvements(profile_path: Path, config: dict | None) -> str:
-    profile_text, field = _profile_and_field(profile_path)
-    return _call_llm(IMP_CV_PROMPT.format(profile_content=profile_text, field=field), config)
+def _cv_content_and_field(profile_path: Path, cv_md_path: Path | None) -> tuple[str, str]:
+    """Gibt (cv_content, field) zurück — cv_content aus lebenslauf_extrahiert.md falls vorhanden, sonst aus Profil."""
+    _, field = _profile_and_field(profile_path)
+    if cv_md_path and cv_md_path.exists():
+        return cv_md_path.read_text(encoding="utf-8"), field
+    profile_text, _ = _profile_and_field(profile_path)
+    return profile_text, field
 
 
-def analyze_project_improvements(profile_path: Path, config: dict | None) -> str:
-    profile_text, field = _profile_and_field(profile_path)
-    return _call_llm(IMP_PROJECTS_PROMPT.format(profile_content=profile_text, field=field), config)
+def analyze_cv_improvements(profile_path: Path, config: dict | None, cv_md_path: Path | None = None) -> str:
+    cv_text, field = _cv_content_and_field(profile_path, cv_md_path)
+    return _call_llm(IMP_CV_PROMPT.format(cv_content=cv_text, field=field), config)
+
+
+def analyze_project_improvements(profile_path: Path, config: dict | None, cv_md_path: Path | None = None) -> str:
+    cv_text, field = _cv_content_and_field(profile_path, cv_md_path)
+    return _call_llm(IMP_PROJECTS_PROMPT.format(cv_content=cv_text, field=field), config)
 
 
 def analyze_github_improvements(profile_path: Path, config: dict | None) -> str:
